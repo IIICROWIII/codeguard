@@ -1,27 +1,24 @@
 'use strict';
 
-// =============================================
-// API INTEGRATION TESTS — Jest + Supertest
-// Tests your EXACT API routes:
-//   GET  /api/health
-//   GET  /api/challenges
-//   GET  /api/challenges/:id
-//   POST /api/submissions       (requires X-Dev-User-Id header)
-//   GET  /api/submissions/me    (requires X-Dev-User-Id header)
-//   GET  /api/submissions/:id   (requires X-Dev-User-Id header)
-//
-// Install: npm install --save-dev jest supertest
-// Run: npx jest --coverage
-// =============================================
-
 const request = require('supertest');
 const app = require('../app');
+const { pool } = require('../db/pool');
 
-// NOTE: These tests need a real running PostgreSQL DB.
-// Set DATABASE_URL in your .env.test file before running.
-// A test user UUID must exist in the users table.
-const TEST_USER_ID = process.env.TEST_USER_ID || 'PUT-A-REAL-USER-UUID-HERE';
+const TEST_USER_ID = process.env.TEST_USER_ID || '00000000-0000-0000-0000-000000000001';
 let firstChallengeId = null;
+
+beforeAll(async () => {
+  await pool.query(
+    `INSERT INTO users (id, email, password_hash, role)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (id) DO NOTHING`,
+    [TEST_USER_ID, 'test@codeguard.com', 'test-hash', 'user']
+  );
+});
+
+afterAll(async () => {
+  await pool.end();
+});
 
 // -------------------------------------------------------
 // HEALTH CHECK
@@ -81,7 +78,7 @@ describe('GET /api/challenges/:id', () => {
       const list = await request(app).get('/api/challenges');
       firstChallengeId = list.body.challenges[0]?.id;
     }
-    if (!firstChallengeId) return; // skip if DB empty
+    if (!firstChallengeId) return;
 
     const res = await request(app).get(`/api/challenges/${firstChallengeId}`);
     expect(res.status).toBe(200);
@@ -102,7 +99,7 @@ describe('GET /api/challenges/:id', () => {
 });
 
 // -------------------------------------------------------
-// SUBMISSIONS (auth via X-Dev-User-Id header)
+// SUBMISSIONS
 // -------------------------------------------------------
 describe('POST /api/submissions', () => {
   test('returns 401 without X-Dev-User-Id header', async () => {
