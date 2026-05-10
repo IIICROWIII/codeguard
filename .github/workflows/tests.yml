@@ -46,4 +46,45 @@ jobs:
           NODE_ENV: test
           PGSSL: false
 
-      - name: Seed databa
+      - name: Seed database
+        run: node src/db/seed.js
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/codeguard_test
+          NODE_ENV: test
+          PGSSL: false
+
+      - name: Create test user
+        run: |
+          node -e "
+          const { Pool } = require('pg');
+          const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: false });
+          pool.query(\"INSERT INTO users (id, email, password_hash, role) VALUES ('00000000-0000-0000-0000-000000000001', 'test@test.com', 'hash', 'user') ON CONFLICT DO NOTHING\")
+            .then(() => { console.log('Test user created'); pool.end(); })
+            .catch(e => { console.error(e); pool.end(); });
+          "
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/codeguard_test
+          PGSSL: false
+
+      - name: Run Jest tests
+        run: npx jest --coverage --forceExit
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/codeguard_test
+          JWT_ACCESS_SECRET: test_secret
+          JWT_REFRESH_SECRET: test_refresh_secret
+          NODE_ENV: test
+          PGSSL: false
+          GOOGLE_CLIENT_ID: dummy-client-id
+          GOOGLE_CLIENT_SECRET: dummy-client-secret
+          TEST_USER_ID: 00000000-0000-0000-0000-000000000001
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: backend/coverage/
+          retention-days: 7
