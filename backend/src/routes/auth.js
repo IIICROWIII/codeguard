@@ -1,43 +1,71 @@
 'use strict';
 
-const passport = require('passport');
-const { Strategy: GoogleStrategy } = require('passport-google-oauth20');
+const express = require('express');
+const passport = require('../config/passport');
+const { requireAuth } = require('../middleware/requireAuth');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { query } = require('../db/pool');
+const { jwt: jwtConfig } = require('../config/env');
+const {
+  register,
+  login,
+  refresh,
+  logout,
+  setup2FA,
+  verify2FA,
+} = require('../controllers/authController');
 
-passport.use(
-  new GoogleStrategy(
-    {
-      clientID:     process.env.GOOGLE_CLIENT_ID,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL:  process.env.GOOGLE_CALLBACK_URL || 'http://localhost:4000/api/auth/google/callback',
-    },
-    async (_accessToken, _refreshToken, profile, done) => {
-      try {
-        const email = profile.emails?.[0]?.value;
-        if (!email) return done(new Error('No email from Google'));
+const router = express.Router();
 
-        // find or create user
-        let { rows } = await query(
-          'SELECT id, email, role FROM users WHERE email = $1',
-          [email]
-        );
+router.post('/register', register);
+router.post('/login',    login);
+router.post('/refresh',  refresh);
+router.post('/logout',   logout);
 
-        if (rows.length === 0) {
-          const result = await query(
-            `INSERT INTO users (email, password_hash)
-             VALUES ($1, $2)
-             RETURNING id, email, role`,
-            [email, 'GOOGLE_OAUTH_NO_PASSWORD']
-          );
-          rows = result.rows;
-        }
+router.post('/2fa/setup',  requireAuth, setup2FA);
+router.post('/2fa/verify', requireAuth, verify2FA);
+router.get('/me',          requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
 
-        return done(null, rows[0]);
-      } catch (err) {
-        return done(err);
-      }
-    }
-  )
+router.get('/google',
+  passport.authenticate('google', { scope: ['profile', 'email'], session: false })
 );
 
-module.exports = passport;
+router.get('/google/callback',
+  passport.authenticate('google', { session: false, failureRedirect: '/login' }),
+  async (req, res) => {
+    try {
+      const user = req.user;
+      const accessToken = jwt.sign(
+        { sub: user.id, email: user.email, role: user.role },
+        jwtConfig.accessSecret,
+        { expiresIn: jwtConfig.accessTtl }
+      );
+      const refreshToken = jwt.sign(
+        { sub: user.id },
+        jwtConfig.refreshSecret,
+        { expiresIn: jwtConfig.refreshTtl }
+      );
+      const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+      const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await query(
+        `INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+        [user.id, hash, expires]
+      );
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      res.redirect(`${frontendUrl}/auth/callback?token=${accessToken}`);
+    } catch (err) {
+      res.redirect('/login?error=oauth_failed');
+    }
+  }
+);
+
+module.exports = router;

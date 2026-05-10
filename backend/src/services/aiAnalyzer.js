@@ -18,13 +18,13 @@ const PATTERNS = [
   {
     type: 'PLAINTEXT_PASSWORD',
     severity: 'high',
-    test: /INSERT\s+INTO\s+\w+\s*\([^)]*\)\s*VALUES\s*\([^)]*,\s*password\s*\)|password_hash[^,)\n]*,\s*password\b/i,
+    test: /,\s*password\s*\]|password_hash[^,)\n]*,\s*password\b/i,
     suggestion: 'Hash passwords with bcrypt (12+ rounds) before storing.',
   },
   {
     type: 'PATH_TRAVERSAL',
     severity: 'high',
-    test: /sendFile\s*\([^)]*req\.(query|params|body)|readFile(?:Sync)?\s*\([^)]*req\.(query|params|body)/,
+    test: /req\.(query|params|body)[^}]*sendFile|sendFile[^;]*req\.(query|params|body)/s,
     suggestion: 'Validate and normalise the path; reject inputs containing `..` segments.',
   },
   {
