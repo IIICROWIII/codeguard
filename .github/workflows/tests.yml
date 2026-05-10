@@ -63,6 +63,8 @@ jobs:
           JWT_REFRESH_SECRET: test_refresh_secret
           NODE_ENV: test
           PGSSL: false
+          GOOGLE_CLIENT_ID: dummy-client-id
+          GOOGLE_CLIENT_SECRET: dummy-client-secret
 
       - name: Upload coverage
         uses: actions/upload-artifact@v4

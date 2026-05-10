@@ -1,17 +1,5 @@
 'use strict';
 
-// Phase 5: mock implementation. Returns the exact contract a real provider
-// (OpenAI / Claude) must conform to. Swap this file's implementation later;
-// the export shape stays the same.
-//
-// Contract:
-//   analyze({ code, expectedIssues }) -> {
-//     errors:          string[],
-//     vulnerabilities: { type, line, severity }[],
-//     suggestions:     string[],
-//     score:           number  // 0..100
-//   }
-
 const SEVERITY_PENALTY = { high: 25, medium: 10, low: 5 };
 
 const PATTERNS = [
@@ -30,13 +18,13 @@ const PATTERNS = [
   {
     type: 'PLAINTEXT_PASSWORD',
     severity: 'high',
-    test: /password_hash[^,)\n]*,\s*password\b|VALUES\s*\([^)]*,\s*password\s*\)/i,
+    test: /INSERT\s+INTO\s+\w+\s*\([^)]*\)\s*VALUES\s*\([^)]*,\s*password\s*\)|password_hash[^,)\n]*,\s*password\b/i,
     suggestion: 'Hash passwords with bcrypt (12+ rounds) before storing.',
   },
   {
     type: 'PATH_TRAVERSAL',
     severity: 'high',
-    test: /sendFile\([^)]*req\.(query|params|body)|readFile(?:Sync)?\([^)]*req\.(query|params|body)/,
+    test: /sendFile\s*\([^)]*req\.(query|params|body)|readFile(?:Sync)?\s*\([^)]*req\.(query|params|body)/,
     suggestion: 'Validate and normalise the path; reject inputs containing `..` segments.',
   },
   {
@@ -56,6 +44,12 @@ const PATTERNS = [
     severity: 'medium',
     test: /\bfunction\b[^{]*\{[^}]*\b\w+\.\w+\.\w+/,
     suggestion: 'Guard against null/undefined intermediate properties (use `?.` or an explicit check).',
+  },
+  {
+    type: 'DANGEROUS_EVAL',
+    severity: 'high',
+    test: /\beval\s*\(/,
+    suggestion: 'Avoid using eval(); it can execute malicious code.',
   },
 ];
 
@@ -81,8 +75,6 @@ function detect(code) {
 
 function checkErrors(code) {
   const errors = [];
-  // Trivially mismatched quotes / braces — the most common syntactic mistakes
-  // a beginner makes; this is a heuristic, not a parser.
   const singleQuotes = (code.match(/'/g) || []).length;
   const doubleQuotes = (code.match(/"/g) || []).length;
   if (singleQuotes % 2 !== 0) errors.push('Unmatched single quote in code.');
@@ -105,12 +97,7 @@ function scoreFor({ errors, vulnerabilities }) {
 function analyze({ code = '', expectedIssues = [] } = {}) {
   const errors = checkErrors(code);
   const { vulnerabilities, suggestions } = detect(code);
-
-  // If the challenge expected an issue and we didn't catch it via patterns,
-  // we don't fabricate one. The expected list is a hint for graders, not a
-  // forced finding — a clean rewrite should score full marks.
   void expectedIssues;
-
   return {
     errors,
     vulnerabilities,
