@@ -1,237 +1,171 @@
 'use strict';
 
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const crypto = require('crypto');
-const speakeasy = require('speakeasy');
-const qrcode = require('qrcode');
-const { query } = require('../db/pool');
-const { jwt: jwtConfig } = require('../config/env');
+const request = require('supertest');
+const app = require('../app');
+const { pool } = require('../db/pool');
 
-const BCRYPT_ROUNDS = 12;
+const TEST_EMAIL = 'coverage@test.com';
+const TEST_PASSWORD = 'TestPass123!';
+let accessToken = null;
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function signAccess(user) {
-  return jwt.sign(
-    { sub: user.id, email: user.email, role: user.role },
-    jwtConfig.accessSecret,
-    { expiresIn: jwtConfig.accessTtl }
+beforeAll(async () => {
+  const { rows } = await pool.query(
+    'SELECT id FROM users WHERE email = $1', [TEST_EMAIL]
   );
-}
+  if (rows.length > 0) {
+    await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [rows[0].id]);
+    await pool.query('DELETE FROM submissions WHERE user_id = $1', [rows[0].id]);
+    await pool.query('DELETE FROM users WHERE id = $1', [rows[0].id]);
+  }
+});
 
-function signRefresh(user) {
-  return jwt.sign(
-    { sub: user.id, jti: crypto.randomUUID() },
-    jwtConfig.refreshSecret,
-    { expiresIn: jwtConfig.refreshTtl }
+afterAll(async () => {
+  const { rows } = await pool.query(
+    'SELECT id FROM users WHERE email = $1', [TEST_EMAIL]
   );
-}
-
-async function saveRefreshToken(userId, token) {
-  const hash = crypto.createHash('sha256').update(token).digest('hex');
-  const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  await query(
-    `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (token_hash) DO NOTHING`,
-    [userId, hash, expires]
-  );
-}
-
-// ── controllers ───────────────────────────────────────────────────────────────
-
-async function register(req, res, next) {
-  try {
-    const { email, password } = req.body || {};
-
-    if (!email || !password) {
-      return res.status(400).json({ error: 'email and password are required' });
-    }
-    if (password.length < 8) {
-      return res.status(400).json({ error: 'password must be at least 8 characters' });
-    }
-
-    const { rows: existing } = await query(
-      'SELECT id FROM users WHERE email = $1', [email]
-    );
-    if (existing.length > 0) {
-      return res.status(409).json({ error: 'Email already in use' });
-    }
-
-    const password_hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const { rows } = await query(
-      `INSERT INTO users (email, password_hash)
-       VALUES ($1, $2)
-       RETURNING id, email, role`,
-      [email, password_hash]
-    );
-
-    const user = rows[0];
-    const accessToken = signAccess(user);
-    const refreshToken = signRefresh(user);
-    await saveRefreshToken(user.id, refreshToken);
-
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    res.status(201).json({ user: { id: user.id, email: user.email, role: user.role }, accessToken });
-  } catch (err) {
-    next(err);
+  if (rows.length > 0) {
+    await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [rows[0].id]);
+    await pool.query('DELETE FROM submissions WHERE user_id = $1', [rows[0].id]);
+    await pool.query('DELETE FROM users WHERE id = $1', [rows[0].id]);
   }
-}
+  await pool.end();
+});
 
-async function login(req, res, next) {
-  try {
-    const { email, password } = req.body || {};
+describe('POST /api/auth/register', () => {
+  test('registers a new user successfully', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: TEST_EMAIL, password: TEST_PASSWORD });
+    expect(res.status).toBe(201);
+    expect(res.body).toHaveProperty('accessToken');
+    expect(res.body.user).toHaveProperty('email', TEST_EMAIL);
+    expect(res.body.user).toHaveProperty('role', 'user');
+    accessToken = res.body.accessToken;
+  });
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'email and password are required' });
-    }
+  test('returns 409 for duplicate email', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: TEST_EMAIL, password: TEST_PASSWORD });
+    expect(res.status).toBe(409);
+  });
 
-    const { rows } = await query(
-      'SELECT id, email, role, password_hash, totp_enabled FROM users WHERE email = $1',
-      [email]
-    );
-    if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+  test('returns 400 when email is missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ password: TEST_PASSWORD });
+    expect(res.status).toBe(400);
+  });
 
-    const user = rows[0];
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
+  test('returns 400 when password is too short', async () => {
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ email: 'new2@test.com', password: '123' });
+    expect(res.status).toBe(400);
+  });
+});
 
-    if (user.totp_enabled) {
-      const { totp_code } = req.body;
-      if (!totp_code) {
-        return res.status(200).json({ twoFactorRequired: true });
-      }
-      const { rows: secretRows } = await query(
-        'SELECT totp_secret FROM users WHERE id = $1', [user.id]
-      );
-      const verified = speakeasy.totp.verify({
-        secret: secretRows[0].totp_secret,
-        encoding: 'base32',
-        token: totp_code,
-        window: 1,
-      });
-      if (!verified) {
-        return res.status(401).json({ error: 'Invalid 2FA code' });
-      }
-    }
+describe('POST /api/auth/login', () => {
+  test('logs in successfully with correct credentials', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email: TEST_EMAIL, password: TEST_PASSWORD });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('accessToken');
+    accessToken = res.body.accessToken;
+  });
 
-    const accessToken = signAccess(user);
-    const refreshToken = signRefresh(user);
-    await saveRefreshToken(user.id, refreshToken);
+  test('returns 401 with wrong password', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email: TEST_EMAIL, password: 'wrongpassword' });
+    expect(res.status).toBe(401);
+  });
 
-    res.cookie('refreshToken', refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+  test('returns 401 with non-existent email', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'notexist@test.com', password: TEST_PASSWORD });
+    expect(res.status).toBe(401);
+  });
 
-    res.json({ user: { id: user.id, email: user.email, role: user.role }, accessToken });
-  } catch (err) {
-    next(err);
-  }
-}
+  test('returns 400 when credentials are missing', async () => {
+    const res = await request(app)
+      .post('/api/auth/login')
+      .send({});
+    expect(res.status).toBe(400);
+  });
+});
 
-async function refresh(req, res, next) {
-  try {
-    const token = req.cookies?.refreshToken;
-    if (!token) {
-      return res.status(401).json({ error: 'No refresh token' });
-    }
+describe('GET /api/auth/me', () => {
+  test('returns current user when authenticated', async () => {
+    const res = await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.user).toHaveProperty('email', TEST_EMAIL);
+  });
 
-    let payload;
-    try {
-      payload = jwt.verify(token, jwtConfig.refreshSecret);
-    } catch {
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
+  test('returns 401 without token', async () => {
+    const res = await request(app).get('/api/auth/me');
+    expect(res.status).toBe(401);
+  });
 
-    const hash = crypto.createHash('sha256').update(token).digest('hex');
-    const { rows } = await query(
-      `SELECT id FROM refresh_tokens
-       WHERE token_hash = $1 AND user_id = $2 AND expires_at > NOW()`,
-      [hash, payload.sub]
-    );
-    if (rows.length === 0) {
-      return res.status(401).json({ error: 'Refresh token revoked or expired' });
-    }
+  test('returns 401 with invalid token', async () => {
+    const res = await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', 'Bearer invalidtoken123');
+    expect(res.status).toBe(401);
+  });
+});
 
-    const { rows: userRows } = await query(
-      'SELECT id, email, role FROM users WHERE id = $1', [payload.sub]
-    );
-    if (userRows.length === 0) {
-      return res.status(401).json({ error: 'User not found' });
-    }
+describe('POST /api/auth/logout', () => {
+  test('logs out successfully', async () => {
+    const res = await request(app)
+      .post('/api/auth/logout')
+      .set('Authorization', `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('message');
+  });
+});
 
-    const accessToken = signAccess(userRows[0]);
-    res.json({ accessToken });
-  } catch (err) {
-    next(err);
-  }
-}
+describe('POST /api/auth/refresh', () => {
+  test('returns 401 without refresh token cookie', async () => {
+    const res = await request(app).post('/api/auth/refresh');
+    expect(res.status).toBe(401);
+  });
+});
 
-async function logout(req, res, next) {
-  try {
-    const token = req.cookies?.refreshToken;
-    if (token) {
-      const hash = crypto.createHash('sha256').update(token).digest('hex');
-      await query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hash]);
-    }
-    res.clearCookie('refreshToken');
-    res.json({ message: 'Logged out' });
-  } catch (err) {
-    next(err);
-  }
-}
+describe('POST /api/auth/2fa/setup', () => {
+  test('returns 401 without auth', async () => {
+    const res = await request(app).post('/api/auth/2fa/setup');
+    expect(res.status).toBe(401);
+  });
 
-async function setup2FA(req, res, next) {
-  try {
-    const secret = speakeasy.generateSecret({ name: `CodeGuard:${req.user.email}` });
-    await query('UPDATE users SET totp_secret = $1 WHERE id = $2', [secret.base32, req.user.id]);
-    const qrUrl = await qrcode.toDataURL(secret.otpauth_url);
-    res.json({ qrCode: qrUrl, secret: secret.base32 });
-  } catch (err) {
-    next(err);
-  }
-}
+  test('returns QR code when authenticated', async () => {
+    const res = await request(app)
+      .post('/api/auth/2fa/setup')
+      .set('Authorization', `Bearer ${accessToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('qrCode');
+    expect(res.body).toHaveProperty('secret');
+  });
+});
 
-async function verify2FA(req, res, next) {
-  try {
-    const { token } = req.body || {};
-    if (!token) {
-      return res.status(400).json({ error: 'token is required' });
-    }
+describe('POST /api/auth/2fa/verify', () => {
+  test('returns 400 with invalid token', async () => {
+    const res = await request(app)
+      .post('/api/auth/2fa/verify')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({ token: '000000' });
+    expect(res.status).toBe(400);
+  });
 
-    const { rows } = await query(
-      'SELECT totp_secret FROM users WHERE id = $1', [req.user.id]
-    );
-    const verified = speakeasy.totp.verify({
-      secret: rows[0].totp_secret,
-      encoding: 'base32',
-      token,
-      window: 1,
-    });
-
-    if (!verified) {
-      return res.status(400).json({ error: 'Invalid token' });
-    }
-
-    await query('UPDATE users SET totp_enabled = TRUE WHERE id = $1', [req.user.id]);
-    res.json({ message: '2FA enabled successfully' });
-  } catch (err) {
-    next(err);
-  }
-}
-
-module.exports = { register, login, refresh, logout, setup2FA, verify2FA };
+  test('returns 400 without token', async () => {
+    const res = await request(app)
+      .post('/api/auth/2fa/verify')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+});
