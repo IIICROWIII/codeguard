@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment files
+.env
+**/.env
+!**/.env.example
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Build
+backend/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+**/coverage/
+
+# Playwright
+frontend/playwright-report/
+frontend/test-results/
+
+# IDE
+.vscode/
+.idea/
