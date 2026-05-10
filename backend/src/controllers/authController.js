@@ -22,7 +22,7 @@ function signAccess(user) {
 
 function signRefresh(user) {
   return jwt.sign(
-    { sub: user.id },
+    { sub: user.id, jti: crypto.randomUUID() },
     jwtConfig.refreshSecret,
     { expiresIn: jwtConfig.refreshTtl }
   );
@@ -33,7 +33,8 @@ async function saveRefreshToken(userId, token) {
   const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await query(
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-     VALUES ($1, $2, $3)`,
+     VALUES ($1, $2, $3)
+     ON CONFLICT (token_hash) DO NOTHING`,
     [userId, hash, expires]
   );
 }
@@ -106,7 +107,6 @@ async function login(req, res, next) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // if 2FA enabled, require totp_code
     if (user.totp_enabled) {
       const { totp_code } = req.body;
       if (!totp_code) {
