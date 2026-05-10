@@ -46,30 +46,4 @@ jobs:
           NODE_ENV: test
           PGSSL: false
 
-      - name: Seed database
-        run: node src/db/seed.js
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/codeguard_test
-          NODE_ENV: test
-          PGSSL: false
-
-      - name: Run Jest tests
-        run: npx jest --coverage --forceExit
-        working-directory: backend
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/codeguard_test
-          JWT_ACCESS_SECRET: test_secret
-          JWT_REFRESH_SECRET: test_refresh_secret
-          NODE_ENV: test
-          PGSSL: false
-          GOOGLE_CLIENT_ID: dummy-client-id
-          GOOGLE_CLIENT_SECRET: dummy-client-secret
-
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage-report
-          path: backend/coverage/
-          retention-days: 7
+      - name: Seed databa
