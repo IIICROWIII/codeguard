@@ -1,11 +1,12 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import api from '@/lib/api';
 
-export default function AuthCallback() {
+function CallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { setUser } = useAuth();
@@ -34,5 +35,17 @@ export default function AuthCallback() {
     <div className="min-h-screen bg-gray-950 flex items-center justify-center">
       <p className="text-green-400 animate-pulse text-xl">🛡️ Signing you in...</p>
     </div>
+  );
+}
+
+export default function AuthCallback() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-950 flex items-center justify-center">
+        <p className="text-green-400 animate-pulse text-xl">🛡️ Loading...</p>
+      </div>
+    }>
+      <CallbackContent />
+    </Suspense>
   );
 }
